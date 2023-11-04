@@ -13,6 +13,7 @@ import (
 	"github.com/PuerkitoBio/goquery"
 	"github.com/carlmjohnson/requests"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
@@ -94,6 +95,11 @@ type pageMeta struct {
 	URL  string
 }
 
+var (
+	continuePageLoop = errors.New("continue page loop")
+	breakPageLoop    = errors.New("break page loop")
+)
+
 func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 	c.workerWG.Add(1)
 
@@ -112,8 +118,8 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 			site.StartURL: {},
 		}
 		urlQueue := []string{site.StartURL}
-
-		otherDomains := make(map[string]string)
+		var errorsEncountered int
+		otherDomains := make(map[string]struct{})
 
 	pageLoop:
 		for {
@@ -129,14 +135,30 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 				urlQueue = slices.Delete(urlQueue, 0, 1)
 			}
 
+			log.Info("get page", "n", currPageNumber, "url", currentURL)
+
 			// Get page
 			var pageBody string
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-			err := requests.URL(currentURL).ToString(&pageBody).UserAgent(conf.UserAgent).Fetch(ctx)
+			err := requests.URL(currentURL).ToString(&pageBody).UserAgent(conf.UserAgent).AddValidator(func(r *http.Response) error {
+				if r.StatusCode/100 >= 4 {
+					errorsEncountered += 1
+					if errorsEncountered == 5 {
+						return breakPageLoop
+					}
+					return continuePageLoop
+				}
+				return nil
+			}).Fetch(ctx)
 			cancel()
 
 			if err != nil {
+				if errors.Is(err, continuePageLoop) {
+					continue pageLoop
+				} else if errors.Is(err, breakPageLoop) {
+					break pageLoop
+				}
 				log.Warn("failed to fetch page", "url", currentURL, "error", err)
 				break pageLoop
 			}
@@ -166,27 +188,15 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 					return
 				}
 
-				if thisURL.Scheme == "" {
-					thisURL.Scheme = currentParsedURL.Scheme
-				} else if !(thisURL.Scheme == "http" || thisURL.Scheme == "https") {
-					return
-				}
-
 				if thisURL.Host == "" {
 					if thisURL.Path == "" {
 						// This is either a URL with a fragment or query string
 						return
 					}
-					thisURL.Host = currentParsedURL.Host
 
-					if !strings.HasPrefix(thisURL.Path, "/") {
-						if strings.HasSuffix(currentParsedURL.Path, "/") {
-							thisURL.Path = currentParsedURL.Path + thisURL.Path
-						} else {
-							thisURL.Path = path.Base(currentParsedURL.Path) + "/" + thisURL.Path
-						}
-					}
-				} else {
+					thisURL = currentParsedURL.ResolveReference(thisURL)
+					_ = thisURL
+				} else if !strings.EqualFold(thisURL.Host, currentParsedURL.Host) {
 					// TODO: this is potentially fumbling some pages that aren't linked directly within the other website
 
 					tx, err := c.DB.Begin()
@@ -208,17 +218,20 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 						return
 					}
 
-					otherDomains[host] = href
+					otherDomains[host] = struct{}{}
 
-					if err := markDomainSeen(tx, host); err != nil {
-						log.Error("failed to mark domain as seen", "error", err)
-						return
-					}
+					//if err := markDomainSeen(tx, host); err != nil {
+					//	log.Error("failed to mark domain as seen", "error", err)
+					//	return
+					//}
+
+					//log.Info("add domain", "host", host)
 
 					if _, err := tx.NewInsert().Model(&database.Site{
-						ID:     snow.Generate(),
-						Domain: host,
-					}).Exec(context.Background()); err != nil {
+						ID:       snow.Generate(),
+						Domain:   host,
+						StartURL: href,
+					}).Ignore().Exec(context.Background()); err != nil {
 						log.Error("insert new Site record", "error", err)
 						return
 					}
@@ -231,11 +244,18 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 					return
 				}
 
-				thisURL.RawQuery = ""
+				if thisURL.Scheme == "" {
+					thisURL.Scheme = currentParsedURL.Scheme
+				} else if !(thisURL.Scheme == "http" || thisURL.Scheme == "https") {
+					return
+				}
+
+				//thisURL.RawQuery = ""
 				thisURL.Fragment = ""
 
 				u := thisURL.String()
 				if _, found := queuedURLs[u]; !found {
+					//log.Info("queueing", "url", thisURL.String(), "href", href)
 					urlQueue = append(urlQueue, u)
 					queuedURLs[u] = struct{}{}
 				}
