@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-func (c *CrawlCore) Loop(stop chan struct{}) error {
+func (c *CrawlCore) Loop(stop chan os.Signal) error {
 	jobs := make(chan *database.Site)
 
 	defer func() {
@@ -45,12 +45,10 @@ func (c *CrawlCore) Loop(stop chan struct{}) error {
 
 mainLoop:
 	for {
-		if stop != nil {
-			select {
-			case <-stop:
-				break mainLoop
-			default:
-			}
+		select {
+		case <-stop:
+			break mainLoop
+		default:
 		}
 
 		tx, err := c.DB.BeginTx(context.Background(), nil)
@@ -84,8 +82,15 @@ mainLoop:
 			return util.Wrap("commit crawl loop transaction", err)
 		}
 
-		jobs <- site
+		select {
+		case jobs <- site:
+		case <-stop:
+			break mainLoop
+		}
+
 	}
+
+	slog.Info("Gracefully shutting down")
 
 	return nil
 }
@@ -111,7 +116,7 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 		currPageNumber := 0
 
 		if site.StartURL == "" {
-			site.StartURL = "http://" + site.Domain + "/"
+			site.StartURL = "https://" + site.Domain + "/"
 		}
 
 		queuedURLs := map[string]struct{}{
@@ -135,10 +140,11 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 				urlQueue = slices.Delete(urlQueue, 0, 1)
 			}
 
-			log.Info("get page", "n", currPageNumber, "url", currentURL)
+			//log.Info("get page", "n", currPageNumber, "url", currentURL)
 
 			// Get page
 			var pageBody string
+			headers := make(map[string][]string)
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 			err := requests.URL(currentURL).ToString(&pageBody).UserAgent(conf.UserAgent).AddValidator(func(r *http.Response) error {
@@ -150,7 +156,7 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 					return continuePageLoop
 				}
 				return nil
-			}).Fetch(ctx)
+			}).CopyHeaders(headers).Fetch(ctx)
 			cancel()
 
 			if err != nil {
@@ -161,6 +167,13 @@ func (c *CrawlCore) worker(workerID int, jobChan chan *database.Site) {
 				}
 				log.Warn("failed to fetch page", "url", currentURL, "error", err)
 				break pageLoop
+			}
+
+			{
+				x := headers["Content-Type"]
+				if len(x) < 1 || !strings.HasPrefix(strings.ToLower(x[0]), "text/html") {
+					continue pageLoop
+				}
 			}
 
 			// Extract links

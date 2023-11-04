@@ -8,6 +8,8 @@ import (
 	"git.tdpain.net/codemicro/hn84/util"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
 )
 
 func main() {
@@ -41,7 +43,9 @@ func run() error {
 			return util.Wrap("add site", err)
 		}
 	case "run":
-		if err := cc.Loop(nil); err != nil {
+		ch := make(chan os.Signal)
+		signal.Notify(ch, syscall.SIGINT)
+		if err := cc.Loop(ch); err != nil {
 			return util.Wrap("run crawl loop", err)
 		}
 	default:
