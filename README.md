@@ -1,4 +1,5 @@
 # Rummage
 
-*A slightly shit search engine built at HackNotts842*
+*A slightly shit search engine built at HackNotts84*
+
 ---
