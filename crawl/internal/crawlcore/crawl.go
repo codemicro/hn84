@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path"
 	"slices"
 	"strings"
@@ -91,6 +92,7 @@ mainLoop:
 	}
 
 	slog.Info("Gracefully shutting down")
+	signal.Stop(stop)
 
 	return nil
 }
