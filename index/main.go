@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"git.tdpain.net/codemicro/hn84/index/internal/config"
 	"git.tdpain.net/codemicro/hn84/index/internal/database"
 	"git.tdpain.net/codemicro/hn84/util"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 )
 
 func main() {
@@ -42,64 +44,93 @@ func walkDir(db *bun.DB, dir string) error {
 		return util.Wrap("read data dir", err)
 	}
 
-	for _, entry := range de {
-		name := entry.Name()
-		if !strings.HasSuffix(name, "html") {
-			continue
+	fmt.Printf("%d entries in %s\n", len(de)/2, dir)
+	defer fmt.Println()
+
+	jobs := make(chan os.DirEntry)
+	stop := new(sync.WaitGroup)
+
+	go worker(jobs, stop, db, dir)
+	go worker(jobs, stop, db, dir)
+	go worker(jobs, stop, db, dir)
+	go worker(jobs, stop, db, dir)
+
+	for i, entry := range de {
+		jobs <- entry
+
+		if i%100 == 0 {
+			fmt.Printf("%d %.0f%%              \r", i, (float32(i)/float32(len(de)))*100)
 		}
+	}
 
-		id := name[:len(name)-5]
+	return nil
+}
 
-		// Process tokens
-
-		htmlContent, err := os.ReadFile(path.Join(dir, name))
-		if err != nil {
-			return util.Wrap("read HTML file", err)
+func worker(jobs chan os.DirEntry, done *sync.WaitGroup, db *bun.DB, dir string) {
+	done.Add(1)
+	for entry := range jobs {
+		if err := processEntry(db, entry, dir); err != nil {
+			slog.Error("entry process error", err)
 		}
+	}
+	done.Done()
+}
 
-		plaintext, pageTitle, err := convertHTMLToPlaintext(string(htmlContent))
-		if err != nil {
-			return util.Wrap("convert HTML to plaintext", err)
-		}
+func processEntry(db *bun.DB, entry os.DirEntry, dir string) error {
+	name := entry.Name()
+	if !strings.HasSuffix(name, "html") {
+		return nil
+	}
 
-		plaintext = filterPlaintextCharacters(plaintext)
-		tokens := tokenise(plaintext)
-		tokens = filterStopwords(tokens)
-		stemTokens(tokens)
+	id := name[:len(name)-5]
 
-		dbTokens := convertToDatabaseTokens(tokens, id)
-		if _, err := db.NewInsert().Model(&dbTokens).Exec(context.Background()); err != nil {
-			return util.Wrap("unable to insert tokens to database", err)
-		}
+	// Process tokens
 
-		// Dump plaintext to file
-		if err := os.WriteFile(path.Join(dir, id+".txt"), []byte(plaintext), 0466); err != nil {
-			return util.Wrap("write plaintext", err)
-		}
+	htmlContent, err := os.ReadFile(path.Join(dir, name))
+	if err != nil {
+		return util.Wrap("read HTML file", err)
+	}
 
-		// Read extra data
-		var dat = struct {
-			URL string
-		}{}
+	plaintext, pageTitle, err := convertHTMLToPlaintext(string(htmlContent))
+	if err != nil {
+		return util.Wrap("convert HTML to plaintext", err)
+	}
 
-		jsonBytes, err := os.ReadFile(path.Join(dir, id+".json"))
-		if err != nil {
-			return util.Wrap("read document info", err)
-		}
+	plaintext = filterPlaintextCharacters(plaintext)
+	tokens := tokenise(plaintext)
+	tokens = filterStopwords(tokens)
+	stemTokens(tokens)
 
-		if err := json.Unmarshal(jsonBytes, &dat); err != nil {
-			return util.Wrap("unmarshal document info", err)
-		}
+	dbTokens := convertToDatabaseTokens(tokens, id)
+	if _, err := db.NewInsert().Model(&dbTokens).Exec(context.Background()); err != nil {
+		return util.Wrap("unable to insert tokens to database", err)
+	}
 
-		if _, err := db.NewInsert().Model(&database.Document{
-			ID:    id,
-			URL:   dat.URL,
-			Title: pageTitle,
-		}).Exec(context.Background()); err != nil {
-			return util.Wrap("insert document to database", err)
-		}
+	// Dump plaintext to file
+	if err := os.WriteFile(path.Join(dir, id+".txt"), []byte(plaintext), 0466); err != nil {
+		return util.Wrap("write plaintext", err)
+	}
 
-		break
+	// Read extra data
+	var dat = struct {
+		URL string
+	}{}
+
+	jsonBytes, err := os.ReadFile(path.Join(dir, id+".json"))
+	if err != nil {
+		return util.Wrap("read document info", err)
+	}
+
+	if err := json.Unmarshal(jsonBytes, &dat); err != nil {
+		return util.Wrap("unmarshal document info", err)
+	}
+
+	if _, err := db.NewInsert().Model(&database.Document{
+		ID:    id,
+		URL:   dat.URL,
+		Title: pageTitle,
+	}).Exec(context.Background()); err != nil {
+		return util.Wrap("insert document to database", err)
 	}
 
 	return nil
