@@ -1,10 +1,9 @@
 package main
 
 import (
-	"fmt"
 	"git.tdpain.net/codemicro/hn84/ui/internal/config"
 	"git.tdpain.net/codemicro/hn84/ui/internal/database"
-	"git.tdpain.net/codemicro/hn84/ui/internal/search"
+	"git.tdpain.net/codemicro/hn84/ui/internal/httpcore"
 	"git.tdpain.net/codemicro/hn84/util"
 	"log/slog"
 )
@@ -21,18 +20,5 @@ func run() error {
 		return util.Wrap("setup database", err)
 	}
 
-	query := search.PlaintextToTokens("reading list")
-
-	matches, err := search.DoSearch(db, query)
-	if err != nil {
-		return util.Wrap("run search", err)
-	}
-
-	fmt.Println(query)
-
-	for _, m := range matches {
-		fmt.Println(m.Document.Title, m.Ranking)
-	}
-
-	return nil
+	return httpcore.ListenAndServe(db)
 }
