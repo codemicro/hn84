@@ -2,6 +2,8 @@ package search
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"git.tdpain.net/codemicro/hn84/ui/internal/database"
 	"git.tdpain.net/codemicro/hn84/util"
 	"github.com/uptrace/bun"
@@ -80,6 +82,9 @@ func DoSearch(db *bun.DB, query []string) ([]*Match, error) {
 	for docID, tokens := range tokensByDocument {
 		doc := new(database.Document)
 		if err := db.NewSelect().Model(doc).Where("id = ?", docID).Scan(context.Background(), doc); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
 			return nil, util.Wrap("final assembly", err)
 		}
 

@@ -60,6 +60,10 @@ func (e *endpoints) search(ctx *fiber.Ctx) error {
 		return err
 	}
 
+	if len(results) > 50 {
+		results = results[:50]
+	}
+
 	var resultNodes []g.Node
 
 	conf := config.Get()
@@ -82,6 +86,10 @@ func (e *endpoints) search(ctx *fiber.Ctx) error {
 			for _, tok := range res.Tokens {
 				if tok.Start >= startPos && tok.End <= endPos {
 					for i, ch := range plaintext[tok.Start : tok.End+1] {
+						pos := (tok.Start - startPos) + i
+						if pos >= len(x) {
+							continue
+						}
 						x[(tok.Start-startPos)+i] = html.B(g.Text(string(ch)))
 					}
 				}
