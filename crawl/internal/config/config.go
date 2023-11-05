@@ -34,7 +34,7 @@ func Get() *Config {
 			NumWorkers:        cl.WithDefault("crawler.numWorkers", 8).AsInt(),
 			MaxPagesPerDomain: cl.WithDefault("crawler.maxPagesPerDomain", 300).AsInt(),
 			UserAgent:         cl.WithDefault("crawler.userAgent", "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0").AsString(),
-			CrawlDataDir:      cl.WithDefault("crawler.dataDir", "crawlData").AsString(),
+			CrawlDataDir:      cl.WithDefault("dataDir", "crawlData").AsString(),
 		}
 	})
 
